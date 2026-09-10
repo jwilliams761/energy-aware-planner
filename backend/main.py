@@ -1,3 +1,5 @@
+from fastapi.middleware.cors import CORSMiddleware
+from multiprocessing.dummy import connection
 import sqlite3
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -6,6 +8,14 @@ from datetime import datetime
 from sqlite3 import connect 
 
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_credentials =True,
+    allow_methods=["*"],
+    allow_headers=["*"]
+)
 
 class TaskCategory(str, Enum):
     SCHOOL = "school"
@@ -57,6 +67,83 @@ def init_db():
     connection.close()
 
 init_db()
+
+def calculate_urgency(due_at: datetime):
+    now = datetime.now()
+    time_remaining = (due_at - now)
+    days_remaining = time_remaining.days
+
+    if days_remaining <= 0:
+        return 50
+    elif days_remaining <= 1:
+        return 45
+    elif days_remaining <= 3:
+        return 35
+    elif days_remaining <= 7:
+        return 25
+    else:
+        return 10
+
+
+def calculate_category_score(category: str):
+    if category == "school":
+        return 30
+    elif category == "career":
+        return 20
+    elif category == "personal":
+        return 10
+    else:
+        return 0
+
+def calculate_wakefulness_fit(wakefulness_level: int, cognitive_demand: int):
+    difference = (wakefulness_level - cognitive_demand)
+    if difference == 0:
+        return 20
+    elif difference == 1:
+        return 15
+    elif difference == 2:
+        return 10
+    else:
+        return 5
+
+
+def generate_recommendation_reason(task, check_in):
+    due_at = datetime.fromisoformat(task["due_at"])
+    now = datetime.now()
+    time_remaining = due_at - now
+    days_remaining = time_remaining.days
+    if due_at < now:
+        urgency_reason = "This task is overdue."
+    elif days_remaining <= 1:
+        urgency_reason = "This task is due within a day."
+    elif days_remaining <= 3:
+        urgency_reason = "This task is due within 3 days."
+    elif days_remaining <= 7:
+        urgency_reason = "This task is due within 7 days."
+    else:
+        urgency_reason = "This task is due in more than a week."
+
+    if task["category"] == "school":
+        category_reason = "This task is a school task, which has a higher priority."
+    elif task["category"] == "career":
+        category_reason = "This task is a career task, which has a moderate priority."
+    else:
+        category_reason = "This task is a personal task, which has a lower priority."
+
+    difference = (check_in.wakefulness_level - task["cognitive_demand"])
+    if difference == 0:
+        wakefulness_reason = "This task closely matches your current wakefulness level."
+    elif difference == 1:
+        wakefulness_reason = "This task is slightly below your current wakefulness level."
+    elif difference == 2:
+        wakefulness_reason =  "This task is comfortably within your current wakefulness level."
+    else:
+        wakefulness_reason  = "This task requires much less cognitive demand than your current wakefulness level allows."
+
+    return category_reason +" " + urgency_reason +" " + wakefulness_reason
+
+
+
 
 @app.get("/")
 def root():
@@ -127,14 +214,97 @@ def update_task(task_id: int, task_update: TaskUpdate):
     connection.close()
     return {"message": "Task updated successfully", "task": updated_task}
 
+
+
 @app.post("/recommendations")
 def get_recommendations(check_in: WakefulnessCheckIn):
     connection = get_db_connection()
     cursor = connection.cursor()
+
+    if check_in.wakefulness_level == 1:
+        cursor.execute("SELECT * FROM tasks WHERE completed = 0" )
+        all_unfinished_rows = cursor.fetchall()
+        urgent_tasks = []        
+
+        for row in all_unfinished_rows:
+            task = dict(row)
+            due_at = datetime.fromisoformat(task["due_at"])
+            urgency_score = calculate_urgency(due_at)
+            if urgency_score >= 35:
+                urgent_tasks.append(task)
+        if urgent_tasks:
+            best_task = max(urgent_tasks, key=lambda task: calculate_category_score(task["category"]))
+            reason = ("This task is urgent, but your current wakefulness is very low. "
+                      "Wash your face if helpful, check your wakefulness again, and return "
+                    "to the task if your alertness has improved."
+            )
+            connection.close()
+            return {"reccomentdation_type": "recovery_then_task", "recommended_task": best_task, "reason": reason}
+        else:
+            return {"reccomentdation_type": "reccomended_task", "recommended_task": None, "reason": "..."}
+
+    if check_in.wakefulness_level == 2:
+        cursor.execute("SELECT  * FROM tasks WHERE completed = 0 AND estimated_minutes <= ? AND cognitive_demand <= 2",  
+                       (check_in.available_minutes,))
+        level_two_rows = cursor.fetchall()
+        urgent_level_two_tasks = []
+        for row in level_two_rows:
+            task = dict(row)
+            due_at = datetime.fromisoformat(task["due_at"])
+            urgency_score = calculate_urgency(due_at)
+            if urgency_score >= 35:
+                urgent_level_two_tasks.append(task)
+        if urgent_level_two_tasks:
+            scored_level_two_tasks = []
+            for task in urgent_level_two_tasks:
+
+                wakefulness_score = calculate_wakefulness_fit(check_in.wakefulness_level, task["cognitive_demand"])
+
+                urgency_score = calculate_urgency(datetime.fromisoformat(task["due_at"]))
+
+                category_score = calculate_category_score(task["category"])
+
+                total_score = urgency_score + category_score + wakefulness_score
+
+                scored_level_two_tasks.append((task, total_score))
+
+                best_task = max(scored_level_two_tasks, key=lambda item: item[1])
+
+                reason = generate_recommendation_reason(best_task[0], check_in)
+
+                connection.close()
+
+                return {"reccomendation_type": "reccomended_task", "recommended_task": best_task[0], "score": best_task[1], "reason": reason}
+        else:
+            connection.close()
+            return {"reccomendation_type": "rest", "recommended_task": None, "reason": "Your wakefulness is low and there are no urgent low-demand tasks that need immediate attention. Consider taking a short rest or refreshing break, then check in again."}
+
+            
+
     cursor.execute(
         "SELECT * FROM tasks WHERE completed = 0 AND estimated_minutes <= ? AND cognitive_demand <= ? ORDER BY due_at ASC",
         (check_in.available_minutes, check_in.wakefulness_level)
     )
     rows = cursor.fetchall()
     connection.close()
-    return [dict(row) for row in rows]
+    
+    scored_tasks = []
+
+    for row in rows:
+        task = dict(row)
+        due_at = datetime.fromisoformat(task["due_at"])
+        urgency_score = calculate_urgency(due_at)
+        category_score = calculate_category_score(task["category"])
+        wakefulness_score = calculate_wakefulness_fit(check_in.wakefulness_level, task["cognitive_demand"])
+        total_score = urgency_score + category_score + wakefulness_score
+        scored_tasks.append((task, total_score))
+    if not scored_tasks:
+        return {"message": "No suitable tasks found"}
+    best_task = max(scored_tasks, key=lambda item: item[1])
+
+    reason = generate_recommendation_reason(best_task[0], check_in)
+
+    return {"recommended_task": best_task[0], "score": best_task[1], "reason": reason}
+      
+    
+        
