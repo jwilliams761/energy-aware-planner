@@ -159,6 +159,19 @@ def create_task(task: Task):
     connection.commit()
     connection.close()
     return {"message": "Task created successfully", "task": task}
+
+
+@app.get("/tasks")
+def get_tasks():
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    cursor.execute("SELECT * FROM tasks")
+    tasks = cursor.fetchall()
+    connection.close()
+    return tasks
+    
+
+
 @app.get("/tasks/{task_id}")
 def get_task(task_id: int):
     connection = get_db_connection()

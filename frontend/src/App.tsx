@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import './App.css'
 import RecommendationCard from './components/RecommendationCard'
+import AddTaskForm from './components/AddTaskForm'
+import TaskList from './components/TaskList'
 function App() {
   const [wakefulnessLevel, setWakefulnessLevel] = useState<number | null>(null)
   const [availableMinutes, setAvailableMinutes] = useState<number | null>(null)
@@ -33,6 +35,8 @@ function App() {
       <header>
         <h1>Energy Aware Planner</h1>
       </header>
+      <AddTaskForm />
+      <TaskList />
       <main><section><h2> How are you feeling?</h2>
       <button onClick={() => setWakefulnessLevel(1)}>Exhausted</button>
       <button onClick={() => setWakefulnessLevel(2)}>Low Energy</button>
